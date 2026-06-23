@@ -10,21 +10,11 @@ spec:
     id: platform-ref-aws
     region: us-west-2
     version: "1.32"
-    providerConfigName: default
     nodes:
       count: 3
-      instanceType: t3.small
-    operators:
-      flux:
-        version: "2.10.6"
-      fluxSync:
-        version: "1.7.2"
-      prometheus:
-        version: "52.1.0"
+      size: small
     gitops:
       git:
-        interval: "5m0s"
-        timeout: "60s"
         url: https://github.com/upbound/platform-ref-aws/
         path: "/"
         ref:

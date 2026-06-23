@@ -18,26 +18,12 @@ _items = [
                             id: "platform-ref-aws"
                             region: "us-west-2"
                             version: "1.32"
-                            providerConfigName: "default"
                             nodes = {
                                 count: 3
-                                instanceType: "t3.small"
-                            }
-                            operators = {
-                                flux = {
-                                    version: "2.10.6"
-                                }
-                                fluxSync = {
-                                    version: "1.7.2"
-                                }
-                                prometheus = {
-                                    version: "52.1.0"
-                                }
+                                size: "small"
                             }
                             gitops = {
                                 git = {
-                                    interval: "5m0s"
-                                    timeout: "60s"
                                     url: "https://github.com/upbound/platform-ref-aws/"
                                     path: "/"
                                     ref = {
@@ -45,46 +31,23 @@ _items = [
                                     }
                                 }
                             }
-
                         }
                     }
                 }
-                # Network for AWS networking
+                # Network for AWS networking (v3 contract: region + overrides only)
                 awsplatformv1alpha1.Network{
                     metadata.name: "platform-ref-aws-network"
                     spec = {
                         parameters = {
-                            id: "platform-ref-aws"
                             region: "us-west-2"
-                            managementPolicies: ["*"]
-                            providerConfigName: "default"
-                            subnets = [
-                                {
-                                    availabilityZone = "us-west-2a"
-                                    type = "public"
-                                    cidrBlock = "192.168.0.0/18"
-                                }
-                                {
-                                    availabilityZone = "us-west-2b"
-                                    type = "public"
-                                    cidrBlock = "192.168.64.0/18"
-                                }
-                                {
-                                    availabilityZone = "us-west-2a"
-                                    type = "private"
-                                    cidrBlock = "192.168.128.0/18"
-                                }
-                                {
-                                    availabilityZone = "us-west-2b"
-                                    type = "private"
-                                    cidrBlock = "192.168.192.0/18"
-                                }
-                            ]
+                            overrides = {
+                                providerConfigName: "default"
+                            }
                         }
                     }
                 },
-                # EKS for Amazon EKS
-                awsplatformv1alpha1.EKS{
+                # Compute (Amazon EKS engine)
+                awsplatformv1alpha1.Compute{
                     metadata = {
                         name: "platform-ref-aws-eks"
                         labels = {
@@ -98,12 +61,19 @@ _items = [
                         parameters = {
                             id: "platform-ref-aws"
                             region: "us-west-2"
-                            managementPolicies: ["*"]
-                            providerConfigName: "default"
+                            engine: "eks"
                             version: "1.32"
                             nodes = {
                                 count: 3
-                                instanceType: "t3.small"
+                                size: "small"
+                            }
+                            # injected from Network.status.zones[] by the L1 function
+                            subnetIds = {
+                                public = ["subnet-pub-a", "subnet-pub-b"]
+                                private = ["subnet-priv-a", "subnet-priv-b"]
+                            }
+                            overrides = {
+                                providerConfigName: "default"
                             }
                         }
                     }
@@ -152,23 +122,19 @@ _items = [
                         }
                     }
                 },
-                # AWSLBController for Load Balancer Controller
-                awsplatformv1alpha1.AWSLBController{
+                # Ingress (ALB) for Load Balancer Controller
+                awsplatformv1alpha1.Ingress{
                     metadata.name: "platform-ref-aws-lb-controller"
                     spec = {
                         parameters = {
-                            providerConfigName: "default"
-                            managementPolicies: ["*"]
-                            helm = {
-                                providerConfigName: "platform-ref-aws"
-                            }
+                            type: "alb"
                             region: "us-west-2"
-                            clusterNameSelector = {
-                                matchLabels = {
-                                    "crossplane.io/composite" = "platform-ref-aws"
-                                }
+                            computeRef = {
+                                id: "platform-ref-aws-eks"
                             }
-                            vpcId: "vpc-test123"
+                            overrides = {
+                                providerConfigName: "default"
+                            }
                         }
                     }
                 },
@@ -181,7 +147,7 @@ _items = [
                         replayDeletion: True
                         by = {
                             apiVersion: "aws.platform.upbound.io/v1alpha1"
-                            kind: "EKS"
+                            kind: "Compute"
                             resourceSelector = {
                                 matchControllerRef: True
                             }
@@ -210,7 +176,7 @@ _items = [
                         }
                         of = {
                             apiVersion: "aws.platform.upbound.io/v1alpha1"
-                            kind: "EKS"
+                            kind: "Compute"
                             resourceSelector = {
                                 matchControllerRef: True
                             }
@@ -232,7 +198,7 @@ _items = [
                         }
                         of = {
                             apiVersion: "aws.platform.upbound.io/v1alpha1"
-                            kind: "EKS"
+                            kind: "Compute"
                             resourceSelector = {
                                 matchControllerRef: True
                             }
@@ -256,7 +222,7 @@ _items = [
                         }
                         of = {
                             apiVersion: "aws.platform.upbound.io/v1alpha1"
-                            kind: "EKS"
+                            kind: "Compute"
                             resourceSelector = {
                                 matchControllerRef: True
                             }
@@ -280,7 +246,7 @@ _items = [
                         }
                         of = {
                             apiVersion: "aws.platform.upbound.io/v1alpha1"
-                            kind: "AWSLBController"
+                            kind: "Ingress"
                             resourceSelector = {
                                 matchControllerRef: True
                             }
@@ -302,7 +268,7 @@ _items = [
                         }
                         of = {
                             apiVersion: "aws.platform.upbound.io/v1alpha1"
-                            kind: "AWSLBController"
+                            kind: "Ingress"
                             resourceSelector = {
                                 matchControllerRef: True
                             }
@@ -311,7 +277,8 @@ _items = [
                 }
             ]
             observedResources: [
-                # Network with VPC ID in status
+                # Network with v3 published status — the inter-domain contract the
+                # L1 function reads (networkId + AZ-structured zones[]).
                 awsplatformv1alpha1.Network{
                     metadata = {
                         name: "platform-ref-aws-network"
@@ -321,36 +288,29 @@ _items = [
                     }
                     spec = {
                         parameters = {
-                            id: "platform-ref-aws"
                             region: "us-west-2"
-                            managementPolicies: ["*"]
-                            providerConfigName: "default"
-                            subnets = [
-                                {
-                                    availabilityZone = "us-west-2a"
-                                    type = "public"
-                                    cidrBlock = "192.168.0.0/18"
-                                }
-                                {
-                                    availabilityZone = "us-west-2b"
-                                    type = "public"
-                                    cidrBlock = "192.168.64.0/18"
-                                }
-                                {
-                                    availabilityZone = "us-west-2a"
-                                    type = "private"
-                                    cidrBlock = "192.168.128.0/18"
-                                }
-                                {
-                                    availabilityZone = "us-west-2b"
-                                    type = "private"
-                                    cidrBlock = "192.168.192.0/18"
-                                }
-                            ]
+                            overrides = {
+                                providerConfigName: "default"
+                            }
                         }
                     }
                     status = {
-                        vpcId: "vpc-test123"
+                        networkId: "vpc-0wired"
+                        securityGroupId: "sg-0wired"
+                        zones = [
+                            {
+                                name = "us-west-2a"
+                                publicSubnetId = "subnet-pub-a"
+                                privateSubnetId = "subnet-priv-a"
+                                natGatewayId = "nat-a"
+                            }
+                            {
+                                name = "us-west-2b"
+                                publicSubnetId = "subnet-pub-b"
+                                privateSubnetId = "subnet-priv-b"
+                                natGatewayId = "nat-b"
+                            }
+                        ]
                     }
                 },
                 # Flux with Ready condition to trigger AWSLBController creation
@@ -397,8 +357,8 @@ _items = [
                         ]
                     }
                 },
-                # EKS with Ready condition to trigger all Helm releases creation
-                awsplatformv1alpha1.EKS{
+                # Compute with Ready condition to trigger Ingress creation
+                awsplatformv1alpha1.Compute{
                     metadata = {
                         name: "platform-ref-aws-eks"
                         annotations = {
@@ -409,12 +369,11 @@ _items = [
                         parameters = {
                             id: "platform-ref-aws"
                             region: "us-west-2"
-                            managementPolicies: ["*"]
-                            providerConfigName: "default"
+                            engine: "eks"
                             version: "1.32"
                             nodes = {
                                 count: 3
-                                instanceType: "t3.small"
+                                size: "small"
                             }
                         }
                     }
@@ -427,13 +386,11 @@ _items = [
                                 lastTransitionTime = "2025-08-13T23:00:00Z"
                             }
                         ]
-                        eks = {
-                            clusterName: "platform-ref-aws-cluster"
-                        }
+                        clusterName: "platform-ref-aws-cluster"
                     }
                 },
-                # AWSLBController with Ready condition to trigger Flux and OSS creation
-                awsplatformv1alpha1.AWSLBController{
+                # Ingress with Ready condition to trigger Flux and OSS creation
+                awsplatformv1alpha1.Ingress{
                     metadata = {
                         name: "platform-ref-aws-lb-controller"
                         annotations = {
@@ -442,18 +399,11 @@ _items = [
                     }
                     spec = {
                         parameters = {
-                            providerConfigName: "default"
-                            managementPolicies: ["*"]
-                            helm = {
-                                providerConfigName: "platform-ref-aws"
-                            }
+                            type: "alb"
                             region: "us-west-2"
-                            clusterNameSelector = {
-                                matchLabels = {
-                                    "crossplane.io/composite" = "platform-ref-aws"
-                                }
+                            computeRef = {
+                                id: "platform-ref-aws-eks"
                             }
-                            vpcId: "vpc-test123"
                         }
                     }
                     status = {

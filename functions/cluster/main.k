@@ -11,9 +11,36 @@ dcds = option("params").dcds
 params = oxr.spec.parameters
 uid = oxr.metadata?.uid
 
+# reclaimPolicy (PV vocabulary) -> Crossplane management policies, for the
+# function-encapsulated v2 children (Oss/Flux) that still take them directly.
+_reclaimPolicy = params?.reclaimPolicy or "Delete"
+_managementPolicies = ["Create", "Observe", "Update", "LateInitialize"] if _reclaimPolicy == "Retain" else ["*"]
+_providerConfigName = params?.overrides?.providerConfigName or "default"
+
+# Operator chart versions are an implementation detail (Observability/GitOps are
+# function-encapsulated); the platform sets defaults, power users may override.
+_operatorDefaults = {
+    flux = {version = "2.10.6"}
+    fluxSync = {version = "1.7.2"}
+    prometheus = {version = "52.1.0"}
+}
+_operators = _operatorDefaults | (params?.overrides?.operators or {})
+
+# The consumer supplies only the GitOps source (url/ref/path); the platform owns
+# the GitRepository tuning (interval/timeout).
+_gitopsSource = {
+    git = {
+        interval = "5m0s"
+        timeout = "60s"
+        url = params.gitops.git.url
+        path = params?.gitops?.git?.path or "/"
+        ref = params.gitops.git.ref
+    }
+}
+
 _defaults = {
-    managementPolicies = params.managementPolicies or ["*"]
-    providerConfigName = params.providerConfigName or "default"
+    managementPolicies = _managementPolicies
+    providerConfigName = _providerConfigName
 }
 
 _metadata = lambda name: str -> any {
@@ -23,8 +50,21 @@ _metadata = lambda name: str -> any {
 # Connection secret name
 connectionSecretName = params.id + "-eks"
 
-# Try to get VPC ID from observed Network status
-_observedVpcId = _ocds?["Network"]?.Resource?.status?.vpcId
+# Inter-domain contract: read the composed Network XR's published status
+# (networkId + AZ-structured zones[]) and inject resolved placement into the
+# children. Parent-injection mechanism — Network.status is the single source of
+# truth; no provider-MR label coupling, no leaked vpcId field.
+_net = _ocds?["Network"]?.Resource?.status or {}
+_networkId = _net?.networkId
+_zones = _net?.zones or []
+_publicSubnetIds = [z.publicSubnetId for z in _zones if z?.publicSubnetId]
+_privateSubnetIds = [z.privateSubnetId for z in _zones if z?.privateSubnetId]
+# Readiness gate: Compute is not created until the Network has published its
+# zones (the network wiring must exist before nodes land).
+_networkReady = len(_zones) > 0
+
+# nodes.size, reclaimPolicy, providerConfig, operators and the gitops source are
+# now first-class L1 contract fields — passed through, no compatibility shims.
 
 # Check if EKS is ready before creating any Helm releases (they all need kubeconfig)
 _eksReadyCondition = [condition for condition in (_ocds?["EKS"]?.Resource?.status?.conditions or []) if condition.type == "Ready" and condition.status == "True"]
@@ -41,106 +81,86 @@ _isLbControllerReady = len(_lbControllerReadyCondition) > 0
 _ossExists = "Oss" in _ocds
 _fluxExists = "Flux" in _ocds
 
-# Generate region-specific availability zones for subnets
-_regionAzMap = {
-    "us-east-1": ["us-east-1a", "us-east-1b"]
-    "us-east-2": ["us-east-2a", "us-east-2b"]
-    "us-west-1": ["us-west-1a", "us-west-1c"]
-    "us-west-2": ["us-west-2a", "us-west-2b"]
-    "eu-west-1": ["eu-west-1a", "eu-west-1b"]
-    "eu-west-2": ["eu-west-2a", "eu-west-2b"]
-    "eu-central-1": ["eu-central-1a", "eu-central-1b"]
-    "ap-southeast-1": ["ap-southeast-1a", "ap-southeast-1b"]
-    "ap-southeast-2": ["ap-southeast-2a", "ap-southeast-2b"]
-    "ap-northeast-1": ["ap-northeast-1a", "ap-northeast-1c"]
-    "ca-central-1": ["ca-central-1a", "ca-central-1b"]
-}
-
-_availabilityZones = _regionAzMap[params.region] if params.region in _regionAzMap else ["us-west-2a", "us-west-2b"]
-
-# Generate subnets configuration based on the region's availability zones
-_regionSpecificSubnets = [
-    {
-        availabilityZone = _availabilityZones[0]
-        type = "public"
-        cidrBlock = "192.168.0.0/18"
-    }
-    {
-        availabilityZone = _availabilityZones[1]
-        type = "public"
-        cidrBlock = "192.168.64.0/18"
-    }
-    {
-        availabilityZone = _availabilityZones[0]
-        type = "private"
-        cidrBlock = "192.168.128.0/18"
-    }
-    {
-        availabilityZone = _availabilityZones[1]
-        type = "private"
-        cidrBlock = "192.168.192.0/18"
-    }
-]
+# Network topology (AZ count, CIDR, subnet strategy, NAT) is the Network
+# domain's concern now — L1 passes only region and lets the v3 Network XRD
+# apply its defaults. The old hardcoded region→AZ map and 192.168/18 subnet
+# plan are gone; that is exactly the implementation detail L1 no longer owns.
 
 _items = [
-    # Network resource
+    # Network resource (v3 contract: intent only — region; topology defaults
+    # live in the Network domain). No id/subnets, no Crossplane machinery.
     awsplatformv1alpha1.Network {
         metadata: _metadata("Network") | {
             name = params.id + "-network"
         }
         spec: {
-            parameters: _defaults | {
-                id = params.id
+            parameters: {
                 region = params.region
-                subnets = _regionSpecificSubnets
+                reclaimPolicy = _reclaimPolicy
+                overrides = {
+                    providerConfigName = _providerConfigName
+                }
             }
         }
     }
 
-    # EKS resource
-    awsplatformv1alpha1.EKS {
-        metadata: _metadata("EKS") | {
-            name = params.id + "-eks"
-            labels: {
-                "platform.upbound.io/deletion-ordering" = oxr.metadata?.labels?["platform.upbound.io/deletion-ordering"]
+    # Compute — created only once the Network has published its zones; subnet
+    # placement is injected from Network.status (no MR-label selectors). L1's
+    # legacy instanceType/iam/providerConfigName map onto the v3 Compute contract.
+    if _networkReady:
+        awsplatformv1alpha1.Compute {
+            metadata: _metadata("EKS") | {
+                name = params.id + "-eks"
+                labels: {
+                    "platform.upbound.io/deletion-ordering" = oxr.metadata?.labels?["platform.upbound.io/deletion-ordering"]
+                }
+                annotations: {
+                    "crossplane.io/external-name" = params.id
+                }
             }
-            annotations: {
-                "crossplane.io/external-name" = params.id
+            spec: {
+                parameters: {
+                    id = params.id
+                    region = params.region
+                    engine = "eks"
+                    version = params.version
+                    nodes = {
+                        count = params.nodes.count
+                        size = params.nodes.size
+                    }
+                    subnetIds = {
+                        public = _publicSubnetIds
+                        private = _privateSubnetIds
+                    }
+                    reclaimPolicy = _reclaimPolicy
+                    overrides = {
+                        providerConfigName = _providerConfigName
+                    }
+                    if params.adminPrincipals:
+                        adminPrincipals = params.adminPrincipals
+                }
             }
         }
-        spec: {
-            parameters: _defaults | {
-                id = params.id
-                region = params.region
-                version = params.version
-                nodes = params.nodes
-            } | ({iam = params.iam} if params.iam else {})
-        }
-    }
 
-    # AWSLBController resource - only create when EKS is ready (needs kubeconfig secret)
-    # Also create if it already exists to prevent uninstalling
+    # Ingress — created once Compute is ready. It resolves the cluster's
+    # connection config, vpc id and name from Compute's published status itself
+    # (via computeRef), so L1 injects neither a ProviderConfig name nor a vpcId.
     if _isEksReady or _lbControllerExists:
-        awsplatformv1alpha1.AWSLBController {
+        awsplatformv1alpha1.Ingress {
             metadata: _metadata("AWSLBController") | {
                 name = params.id + "-lb-controller"
             }
             spec: {
-                parameters: _defaults | {
-                    helm: {
-                        providerConfigName = params.id
-                    }
+                parameters: {
+                    type = "alb"
                     region = params.region
-                    clusterNameSelector = {
-                        matchLabels = {
-                            "crossplane.io/claim-name" = params.id
-                        } if oxr.spec?.claimRef?.name else {
-                            "crossplane.io/composite" = params.id
-                        }
+                    computeRef = {
+                        id = params.id + "-eks"
                     }
-                    # Pass VPC ID if available to avoid EC2 metadata discovery
-                    if _observedVpcId:
-                        vpcId = _observedVpcId
+                    reclaimPolicy = _reclaimPolicy
+                    overrides = {
+                        providerConfigName = _providerConfigName
+                    }
                 }
             }
         }
@@ -156,9 +176,9 @@ _items = [
                 parameters: {
                     id = params.id
                     operators: {
-                        prometheus = params.operators?.prometheus
+                        prometheus = _operators.prometheus
                     }
-                    managementPolicies = params.managementPolicies or ["*"]
+                    managementPolicies = _managementPolicies
                 }
             }
         }
@@ -174,10 +194,10 @@ _items = [
                 parameters: _defaults | {
                     providerConfigName = params.id
                     operators: {
-                        flux = params.operators?.flux
-                        fluxSync = params.operators?.fluxSync
+                        flux = _operators.flux
+                        fluxSync = _operators.fluxSync
                     }
-                    source = params.gitops
+                    source = _gitopsSource
                 }
             }
         }
@@ -193,7 +213,7 @@ _items = [
             replayDeletion = True
             by: {
                 apiVersion = "aws.platform.upbound.io/v1alpha1"
-                kind = "EKS"
+                kind = "Compute"
                 resourceSelector: {
                     matchControllerRef = True
                 }
@@ -225,7 +245,7 @@ _items = [
             }
             of: {
                 apiVersion = "aws.platform.upbound.io/v1alpha1"
-                kind = "EKS"
+                kind = "Compute"
                 resourceSelector: {
                     matchControllerRef = True
                 }
@@ -250,7 +270,7 @@ _items = [
             }
             of: {
                 apiVersion = "aws.platform.upbound.io/v1alpha1"
-                kind = "EKS"
+                kind = "Compute"
                 resourceSelector: {
                     matchControllerRef = True
                 }
@@ -280,7 +300,7 @@ _items = [
             }
             of: {
                 apiVersion = "aws.platform.upbound.io/v1alpha1"
-                kind = "EKS"
+                kind = "Compute"
                 resourceSelector: {
                     matchControllerRef = True
                 }
@@ -310,7 +330,7 @@ _items = [
             }
             of: {
                 apiVersion = "aws.platform.upbound.io/v1alpha1"
-                kind = "AWSLBController"
+                kind = "Ingress"
                 resourceSelector: {
                     matchControllerRef = True
                 }
@@ -339,7 +359,7 @@ _items = [
             }
             of: {
                 apiVersion: "aws.platform.upbound.io/v1alpha1"
-                kind: "AWSLBController"
+                kind: "Ingress"
                 resourceSelector: {
                     matchControllerRef = True
                 }
@@ -359,5 +379,14 @@ _items = [
             data: {}
     }
 ]
+
+# Publish a clean status (cluster name from the Compute child).
+_dxr = _dxr | {
+    status: {
+        if _ocds?["EKS"]?.Resource?.status?.clusterName:
+            clusterName = _ocds["EKS"].Resource.status.clusterName
+    }
+}
+_items += [_dxr]
 
 items = _items

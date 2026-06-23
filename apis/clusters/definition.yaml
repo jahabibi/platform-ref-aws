@@ -17,6 +17,11 @@ spec:
     schema:
       openAPIV3Schema:
         type: object
+        description: >-
+          Cluster is the platform API application teams consume: a fully
+          configured Kubernetes cluster with networking, ingress, observability
+          and GitOps. It expresses what consumers vary and stays silent about how
+          it is delivered.
         properties:
           spec:
             type: object
@@ -25,158 +30,120 @@ spec:
                 type: object
                 description: Cluster configuration parameters.
                 properties:
-                  clusterName:
-                    type: string
-                    description: The name of the cluster on the cloud platform.
                   id:
                     type: string
-                    description: ID of this Cluster that other objects will use to refer to it.
+                    description: Platform identifier other objects use to reference this cluster.
                   region:
                     type: string
-                    description: Region is the region you'd like your resource to be created in.
-                  iam:
-                    type: object
-                    description: IAM configuration to connect as ClusterAdmin.
-                    properties:
-                      principalArn:
-                        description: The IAM Principal ARN to connect as ClusterAdmin.
-                        type: string
-                  managementPolicies:
-                    description: ManagementPolicies for AWS EC2 resources. Defaults to ["*"] which includes all operations (Create, Observe, Update, Delete, LateInitialize). To orphan resources on deletion, use ["Create", "Observe", "Update", "LateInitialize"].
-                    type: array
-                    items:
-                      type: string
-                      enum:
-                      - "*"
-                      - Create
-                      - Observe
-                      - Update
-                      - Delete
-                      - LateInitialize
-                    default: ["*"]
-                  providerConfigName:
-                    description: Crossplane ProviderConfig to use for provisioning this resources
-                    type: string
-                    default: default
+                    description: Cloud region, e.g. us-west-2.
                   version:
                     type: string
-                    description: Kubernetes version of the Cluster
-                    enum:
-                    - "1.33"
-                    - "1.32"
-                    - "1.31"
+                    enum: ["1.33", "1.32", "1.31"]
                     default: "1.32"
+                    description: Kubernetes version.
                   nodes:
                     type: object
-                    description: Cluster node configuration parameters.
+                    description: Worker node intent.
                     properties:
                       count:
                         type: integer
-                        description: Desired node count, from 1 to 100.
-                      instanceType:
+                        description: Desired node count.
+                      size:
                         type: string
-                        description: instance types associated with the Node Group.
-                        default: t3.small
+                        enum: [small, medium, large]
+                        default: small
+                        description: >-
+                          Node capacity intent; the platform maps it to the right
+                          instance type. Consumers express capacity, never a
+                          provider instance type.
                     required:
                     - count
-                    - instanceType
-                  operators:
-                    description: Configuration for operators.
-                    type: object
-                    default:
-                      flux:
-                        version: "2.10.6"
-                      fluxSync:
-                        version: "1.7.2"
-                      prometheus:
-                        version: "52.1.0"
-                    properties:
-                      flux:
-                        description: Configuration for the Flux GitOps operator.
-                        type: object
-                        properties:
-                          version:
-                            description: flux helm-chart version to run.
-                            type: string
-                            default: "2.10.6"
-                        required:
-                        - version
-                      fluxSync:
-                        description: Configuration for the Flux Sync Helm-Chart.
-                        type: object
-                        properties:
-                          version:
-                            description: flux sync helm-chart version to run.
-                            type: string
-                            default: "1.7.2"
-                        required:
-                        - version
-                      prometheus:
-                        description: Configuration for the Prometheus Helm-Chart.
-                        type: object
-                        properties:
-                          version:
-                            description: prometheus helm-chart version to run.
-                            type: string
-                            default: "52.1.0"
-                        required:
-                        - version
+                  adminPrincipals:
+                    type: array
+                    items:
+                      type: string
+                    description: >-
+                      Cloud principals (e.g. IAM role/user ARNs) granted
+                      cluster-admin. "Who can administer this cluster" is consumer
+                      intent; the access wiring is owned by the platform.
+                  reclaimPolicy:
+                    type: string
+                    enum: [Delete, Retain]
+                    default: Delete
+                    description: >-
+                      Outcome intent, using the Kubernetes PersistentVolume
+                      vocabulary. Retain leaves cloud resources in place when this
+                      cluster is deleted. The mapping to Crossplane management
+                      policies is an implementation detail; this field does not
+                      echo Crossplane machinery.
                   gitops:
-                    description: GitOps configure gitops system
                     type: object
+                    description: >-
+                      GitOps source the cluster bootstraps from. The platform
+                      installs and tunes the GitOps engine; the consumer supplies
+                      only the repository to deploy from.
                     properties:
                       git:
                         type: object
                         properties:
-                          interval:
-                            default: "5m0s"
-                            description: Interval at which the GitRepository URL is checked for
-                              updates. This interval is approximate and may be subject to jitter
-                              to ensure efficient use of resources.
-                            pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m|h))+$
-                            type: string
-                          timeout:
-                            default: "60s"
-                            description: Timeout for Git operations like cloning, defaults to
-                              60s.
-                            pattern: ^([0-9]+(\.[0-9]+)?(ms|s|m))+$
-                            type: string
                           url:
-                            description: URL specifies the Git repository URL, it can be an HTTP/S
-                              or SSH address.
-                            pattern: ^(http|https|ssh)://.*$
                             type: string
+                            pattern: ^(http|https|ssh)://.*$
+                            description: Git repository URL (HTTP/S or SSH).
                           path:
                             type: string
                             default: "/"
+                            description: Path within the repository to sync.
                           ref:
-                            description: Reference specifies the Git reference to resolve and
-                              monitor for changes.
                             type: object
+                            description: Git reference to resolve and monitor.
                             properties:
                               name:
-                                description: "Name of the reference to check out; takes precedence
-                                  over Branch, Tag and SemVer. \n It must be a valid Git reference:
-                                  https://git-scm.com/docs/git-check-ref-format#_description Examples:
-                                  \"refs/heads/main\", \"refs/tags/v0.1.0\", \"refs/pull/420/head\",
-                                  \"refs/merge-requests/1/head\""
                                 type: string
+                                description: 'Git reference, e.g. "refs/heads/main".'
                         required:
-                        - interval
-                        - timeout
                         - url
-                        - path
                         - ref
                     required:
                     - git
+                  overrides:
+                    type: object
+                    description: >-
+                      Bounded escape hatch with an explicit support boundary, so
+                      operational edge cases have a sanctioned outlet instead of
+                      forcing leaks into the primary contract.
+                    properties:
+                      providerConfigName:
+                        type: string
+                        description: >-
+                          Crossplane ProviderConfig for account/credential
+                          selection. Defaults to "default".
+                      operators:
+                        type: object
+                        description: >-
+                          Pin platform operator (Flux/Prometheus) chart versions.
+                          Normally platform-managed; override only when required.
+                        properties:
+                          flux:
+                            type: object
+                            properties:
+                              version:
+                                type: string
+                          fluxSync:
+                            type: object
+                            properties:
+                              version:
+                                type: string
+                          prometheus:
+                            type: object
+                            properties:
+                              version:
+                                type: string
                 required:
-                - managementPolicies
-                - gitops
                 - id
-                - nodes
-                - operators
-                - providerConfigName
                 - region
+                - nodes
+                - gitops
             required:
             - parameters
           status:
@@ -184,9 +151,6 @@ spec:
             properties:
               clusterName:
                 type: string
-              subnetIds:
-                type: array
-                items:
-                  type: string
-              oidcProvider:
-                type: string
+                description: The cluster's name in the cloud.
+        required:
+        - spec

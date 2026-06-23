@@ -28,30 +28,30 @@ _items = [
                             id: "test-cluster-e2e"
                             region: "eu-central-1"
                             version: "1.33"
-                            providerConfigName: "default"
                             nodes= {
                                 count: 3 # Single node is not enough for e2e test with lb-controller and rest of the helm charts
-                                instanceType: "t3.small"
-                            }
-                            operators= {
-                                flux= {
-                                    version: "2.16.4"
-                                }
-                                fluxSync= {
-                                    version: "1.13.4"
-                                }
-                                prometheus= {
-                                    version: "76.3.0"
-                                }
+                                size: "small"
                             }
                             gitops= {
                                 git= {
-                                    interval: "5m0s"
-                                    timeout: "60s"
                                     url: "https://github.com/upbound/platform-ref-aws/"
                                     path: "/"
                                     ref= {
                                         name: "refs/heads/main"
+                                    }
+                                }
+                            }
+                            # non-default chart versions via the bounded escape hatch
+                            overrides= {
+                                operators= {
+                                    flux= {
+                                        version: "2.16.4"
+                                    }
+                                    fluxSync= {
+                                        version: "1.13.4"
+                                    }
+                                    prometheus= {
+                                        version: "76.3.0"
                                     }
                                 }
                             }
@@ -60,14 +60,13 @@ _items = [
                 },
 
                 # 2. Database XR (MariaDB)
-                platformawsv1alpha1.SQLInstance{
+                platformawsv1alpha1.DataStore{
                     metadata = {
                         name: "test-cluster-e2e-db-mariadb"
                         namespace: "default"
                     }
                     spec = {
                         parameters = {
-                            providerConfigName: "default"
                             region: "eu-central-1"
                             engine: "mariadb"
                             engineVersion: "10.11.14"
