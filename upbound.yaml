@@ -16,19 +16,19 @@ spec:
   - apiVersion: pkg.crossplane.io/v1
     kind: Configuration
     package: xpkg.upbound.io/upbound/configuration-aws-lb-controller
-    version: v3.0.0-dev.4
+    version: v3.0.0-dev.11
   - apiVersion: pkg.crossplane.io/v1
     kind: Configuration
     package: xpkg.upbound.io/upbound/configuration-aws-network
-    version: v3.0.0-dev.2
+    version: v3.0.0-dev.11
   - apiVersion: pkg.crossplane.io/v1
     kind: Configuration
     package: xpkg.upbound.io/upbound/configuration-aws-database
-    version: v3.0.0-dev.4
+    version: v3.0.0-dev.11
   - apiVersion: pkg.crossplane.io/v1
     kind: Configuration
     package: xpkg.upbound.io/upbound/configuration-aws-eks
-    version: v3.0.0-dev.4
+    version: v3.0.0-dev.11
   - apiVersion: pkg.crossplane.io/v1
     kind: Configuration
     package: xpkg.upbound.io/upbound/configuration-app
